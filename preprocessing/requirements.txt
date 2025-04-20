@@ -1,2 +1,3 @@
 pandas = 2.2.3
 DeeperSeeker = 0.1.4
+openai = 1.71.0
