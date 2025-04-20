@@ -19,6 +19,12 @@ class PersonalityMatrix:
         self.neuro = vals[4]
 
 
+class Review:
+    def __init__(self, movieID, userID, score):
+        self.movieID = movieID
+        self.userID = userID
+        self.score = score
+
 class Reviewer:
     def __init__(self):
         self.reviewerID = None
@@ -38,6 +44,15 @@ def parse_completion(completion):
     return res
 
 
+def decompose_movie_map(movie_map, user_map):
+    res = list()
+
+    for movie_id in movie_map:
+        user_set = movie_map[movie_id]
+        for user_id in user_set:
+            user = user_map[user_id]
+            res.append(Review(movie_id, user_id, user.movies_watched[movie_id]))
+    return res
 
 
 def k_core_filter_pass(user_map, movie_map, k):
@@ -143,12 +158,15 @@ def main():
 #        personality_map[userID] = personality_m
 
     print("Writing excel to /tmp/dataset")
-    user_dataframe = pd.Dataframe(user_map)
-    movie_dataframe = pd.Dataframe(movie_map)
 
-    with pd.ExcelWriter(/tmp/dataset/out.xlsx) as excel_out:
+    movie_frame = decompose_movie_map(movie_map, user_map)
+
+    user_dataframe = pd.DataFrame(user_map, index=[0,3])
+    movie_dataframe = pd.DataFrame(movie_frame)
+
+    with pd.ExcelWriter("/tmp/dataset/out.xlsx") as excel_out:
         user_dataframe.to_excel(excel_out, sheet_name="User")
-        movie_dataframe.to_excel(excel_out, shee_name="Movie")
+        movie_dataframe.to_excel(excel_out, sheet_name="Movie")
 
 
 
