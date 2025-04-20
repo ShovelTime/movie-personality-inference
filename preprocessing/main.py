@@ -1,6 +1,7 @@
 import json
 import sys
 import pandas as pd
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openai import OpenAI
 
 class PersonalityMatrix:
@@ -17,13 +18,6 @@ class PersonalityMatrix:
         self.agree = vals[2]
         self.consc = vals[3]
         self.neuro = vals[4]
-
-
-class Review:
-    def __init__(self, movieID, userID, score):
-        self.movieID = movieID
-        self.userID = userID
-        self.score = score
 
 class Reviewer:
     def __init__(self):
@@ -51,9 +45,14 @@ def decompose_movie_map(movie_map, user_map):
         user_set = movie_map[movie_id]
         for user_id in user_set:
             user = user_map[user_id]
-            res.append(Review(movie_id, user_id, user.movies_watched[movie_id]))
+            res.append([movie_id, user_id, user.movies_watched[movie_id]])
     return res
 
+def decompose_user_map(user_map): # TODO: add in personality matrix
+    res = list()
+    for user in user_map.values():
+        res.append([user.reviewerID, ILLEGAL_CHARACTERS_RE.sub(r'',user.reviewTexts.strip())])
+    return res
 
 def k_core_filter_pass(user_map, movie_map, k):
     pending_removal = list()
@@ -123,11 +122,11 @@ def main():
         print("Finished parsing reviews, user count = " + str(len(user_map)) + "\nmovie count:" + str(len(movie_map)))
         
         #10-core filtering
-        while k_core_filter_pass(user_map, movie_map, 25) != False:
+        while k_core_filter_pass(user_map, movie_map, 20) != False:
             continue
 
 
-        print("\n\nProcessed 25-core filter passes, user count = " + str(len(user_map)) + "\nmovie count:" + str(len(movie_map)))
+        print("\n\nProcessed 20-core filter passes, user count = " + str(len(user_map)) + "\nmovie count:" + str(len(movie_map)))
 
 #    personality_map = dict()
 
@@ -160,9 +159,10 @@ def main():
     print("Writing excel to /tmp/dataset")
 
     movie_frame = decompose_movie_map(movie_map, user_map)
+    user_frame = decompose_user_map(user_map) #, personality_m) work personality matrix in eventually
 
-    user_dataframe = pd.DataFrame(user_map, index=[0,3])
-    movie_dataframe = pd.DataFrame(movie_frame)
+    user_dataframe = pd.DataFrame(user_frame, columns=["user_id", "reviewTexts"])
+    movie_dataframe = pd.DataFrame(movie_frame, columns=["movie_id", "user_id", "score"])
 
     with pd.ExcelWriter("/tmp/dataset/out.xlsx") as excel_out:
         user_dataframe.to_excel(excel_out, sheet_name="User")
