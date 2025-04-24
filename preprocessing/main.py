@@ -125,7 +125,7 @@ def perform_personality_inference(user_map, movie_map):
         movie_frame = decompose_movie_map(movie_map, user_map, personality_map)
         #user_frame = decompose_user_map(user_map) #, personality_m) work personality matrix in eventually
 
-        user_dataframe = pd.DataFrame(personality_map, columns=["user_id", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
+        #user_dataframe = pd.DataFrame(personality_map, columns=["user_id", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
         movie_dataframe = pd.DataFrame(movie_frame, columns=["movie_id", "user_id", "score", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
 
         with pd.ExcelWriter("/tmp/dataset/out.xlsx") as excel_out:
