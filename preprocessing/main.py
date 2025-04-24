@@ -14,12 +14,11 @@ class Reviewer:
     def __init__(self):
         self.reviewerID = None
         self.movies_watched = dict()
-        self.reviewTexts = ""
+        self.reviewTexts = list()
 
 
-def parse_completion(completion, user_id):
+def parse_completion(completion):
     res = list()
-    res.append(user_id)
     str_arr = completion.split(',')
     for r_string in str_arr:
         s_split = r_string.split(':')[1]
@@ -27,20 +26,35 @@ def parse_completion(completion, user_id):
 
     return res
 
-def decompose_movie_map(movie_map, user_map):
+def personality_average(p_list):
+    res = [0.0, 0.0, 0.0, 0.0, 0.0]
+    for p_mat in p_list:
+        res[0] += p_mat[0]
+        res[1] += p_mat[1]
+        res[2] += p_mat[2]
+        res[3] += p_mat[3]
+        res[4] += p_mat[4]
+    
+    res[0] /= len(p_list)
+    res[1] /= len(p_list)
+    res[2] /= len(p_list)
+    res[3] /= len(p_list)
+    res[4] /= len(p_list)
+
+def decompose_movie_map(movie_map, user_map, personality_map):
     res = list()
     for movie_id in movie_map:
         user_set = movie_map[movie_id]
         for user_id in user_set:
             user = user_map[user_id]
-            res.append([movie_id, user_id, user.movies_watched[movie_id]])
+            res.append([movie_id, user_id, user.movies_watched[movie_id]].append(personality_map[user_id]))
 
     return res
 
 def decompose_user_map(user_map): # TODO: add in personality matrix
     res = list()
     for user in user_map.values():
-        res.append([user.reviewerID, ILLEGAL_CHARACTERS_RE.sub(r'',user.reviewTexts.strip())])
+        res.append([user.reviewerID, user.reviewTexts])
 
     return res
 
@@ -80,7 +94,7 @@ def k_core_filter_pass(user_map, movie_map, k):
     return filtered
 
 def perform_personality_inference(user_map, movie_map):
-        personality_map = list()
+        personality_map = map()
         #OpenAI
         openai_key = "EMPTY"
         openai_base = "http://localhost:8000/v1"
@@ -92,27 +106,27 @@ def perform_personality_inference(user_map, movie_map):
         print("Beginning personality inference...")
 
         for user in user_map.values():
+            temp_list = list()
             user_id = user.reviewerID
-            input = user.reviewTexts
-            print("Prompt: \n\n" + PROMPT + "\n" + input)
-            res = openai_client.chat.completions.create(
-                model="unsloth/DeepSeek-R1-Distill-Llama-8B-unsloth-bnb-4bit",
-                messages=[
-                   {"role": "system", "content": PROMPT},
-                    {"role": "user", "content": input},
-                ]
-            )
-            print("\nOutput:\n\n" + res.choices[0].message.content)
-            personality_m = parse_completion(res.choices[0].message.content, user_id)
-            personality_map.append(personality_m)
+            for input in user.reviewTexts:
+                res = openai_client.chat.completions.create(
+                    model="unsloth/DeepSeek-R1-Distill-Llama-8B-unsloth-bnb-4bit",
+                    messages=[
+                    {"role": "user", "content": PROMPT + "\n" + input},
+                    ]
+                )
+                print("\nOutput:\n\n" + res.choices[0].message.content)
+                temp_list.append(parse_completion(res.choices[0].message.content))
+            final_personality = average_personality(temp_list)
+            personality_map[user_id] = final_personality
 
         print("Writing excel to /tmp/dataset")
 
-        movie_frame = decompose_movie_map(movie_map, user_map)
-        user_frame = decompose_user_map(user_map) #, personality_m) work personality matrix in eventually
+        movie_frame = decompose_movie_map(movie_map, user_map, personality_map)
+        #user_frame = decompose_user_map(user_map) #, personality_m) work personality matrix in eventually
 
         user_dataframe = pd.DataFrame(personality_map, columns=["user_id", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
-        movie_dataframe = pd.DataFrame(movie_frame, columns=["movie_id", "user_id", "score"])
+        movie_dataframe = pd.DataFrame(movie_frame, columns=["movie_id", "user_id", "score", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
 
         with pd.ExcelWriter("/tmp/dataset/out.xlsx") as excel_out:
             user_dataframe.to_excel(excel_out, sheet_name="User")
@@ -123,12 +137,12 @@ def perform_personality_inference(user_map, movie_map):
 def main():
     user_map = dict()
     movie_map = dict()
-    with open("/tmp/dataset/new.json", "r") as file:
-        json_file = json.load(file)
-        for json_item in json_file:
-            if "reviewText" not in json_item:
+    with open("./Movies_and_TV.jsonl", "r") as file:
+        for line in file:
+            json_item = json.loads(line.strip())
+            if "text" not in json_item:
                 continue
-            user_id = json_item["reviewerID"]
+            user_id = json_item["user_id"]
             movie_id = json_item["asin"]
             user = None
             if user_id in user_map:
@@ -136,8 +150,8 @@ def main():
             else:
                 user = Reviewer()
                 user.reviewerID = user_id
-            user.movies_watched[movie_id] = json_item["overall"]
-            user.reviewTexts += json_item["reviewText"] + "\n\n"
+            user.movies_watched[movie_id] = json_item["rating"]
+            user.reviewTexts.append(json_item["text"])
             
             user_set = None
             if movie_id in movie_map:
@@ -159,20 +173,20 @@ def main():
         print("\n\nProcessed 20-core filter passes, user count = " + str(len(user_map)) + "\nmovie count:" + str(len(movie_map)))
 
 
-    average = 0
-    highest = 0
-    lowest = 0
-    for user in user_map.values():
-        length = len(re.findall(r'\w+', user.reviewTexts))
-        average += length
-        if length < lowest or lowest == 0:
-            lowest = length
-        if length > highest or highest == 0:
-            highest = length
+    #average = 0
+    #highest = 0
+    #lowest = 0
+    #for user in user_map.values():
+    #    length = len(re.findall(r'\w+', user.reviewTexts))
+    #    average += length
+    #    if length < lowest or lowest == 0:
+    #        lowest = length
+    #    if length > highest or highest == 0:
+    #        highest = length
 
-    average = average / len(user_map.keys())
+    #average = average / len(user_map.keys())
 
-    print(f"Review Text Word Count Statistics:\naverage : {average}\nhighest : {highest}\nlowest : {lowest}\n")
+    #print(f"Review Text Word Count Statistics:\naverage : {average}\nhighest : {highest}\nlowest : {lowest}\n")
 
 
     #perform_personality_inference(user_map, movie_map)
