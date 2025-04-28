@@ -18,11 +18,26 @@ class Reviewer:
 
 
 def parse_completion(completion):
-    res = list()
+    res = ["","","","",""]
     str_arr = completion.split(',')
     for r_string in str_arr:
-        s_split = r_string.split(':')[1]
-        res.append(s_split)
+        split = r_string.split(':')
+        match split[0].strip():
+            case "Openness":
+                res[0] = split[1]
+                continue
+            case "Extraversion":
+                res[1] = split[1]
+                continue
+            case "Agreeablesness":
+                res[2] = split[1]
+                continue
+            case "Conscientiousness":
+                res[3] = split[1]
+                continue
+            case "Neuroticism":
+                res[4] = split[1]
+                continue
 
     return res
 
