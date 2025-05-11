@@ -2,26 +2,50 @@ import json
 import array
 import sys
 import re
+import warnings
 import pandas as pd
+import os.path
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from openai import OpenAI
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+#from openai import OpenAI
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, RobertaTokenizerFast
 import torch
+from torch.utils.data import Dataset, DataLoader
+from multiprocessing.pool import Pool, ThreadPool
+from sklearn import preprocessing
+from collections import defaultdict
+import time
+import numpy as np
+import random
+from tqdm import tqdm
 
-#MAX_TOKEN_COUNT = 12880 * 0.70 # maximum token count that the model can read at once. Divided by 3 to allow space for reasoning
-#PROMPT_TOKEN_COUNT = 422 # token space taken by the system prompt
-#PROMPT = "You are a psychologist experienced in analysizing text and determining their personality profile. Your task will be to classify user text based on the OCEAN model, or Big Five personality traits model. From the text, you want to determine five traits: \nOpenness: How open a person is to new experiences, and to allowing their imagination to run wild. \nExtraversion: How energetic and socially outgoing a person, tending to be more talkative and assertive in conversation.\nAgreeableness: A person who exhibits prosocial behavior, including trust, kindness and affection.\nConscientiousness: A person who has high level of thoughtfulness, self-control, focused on a goal and organized.\nNeuroticism: A person who shoes moody behaviour, sadness, and unstable emotions, generally is negative.\nYou will classify a user's text based on these five personalities traits. for each trait, assign a score on a scale from 1 to 7, with a score of 1 meaning that the text does not align with the trait's values, and 7 meaning that the text aligns extremely well with the trait's values. Values can be rounded up to a tenth, like 4.5 for example. \n Analyze the following text based on the Big Five personality traits, and output the scores without any extra texts or explanation using the following format \"Openness: score, Extraversion: score,  Agreeableness: score, Conscientiousness: score, Neuroticism: score\":"
+
+#Control Random Indices selection for split,
+SPLIT_RANDOM_SEED = 32489634
 
 class Reviewer:
     def __init__(self):
         self.reviewerID = None
         self.movies_watched = dict()
-        self.reviewTexts = list()
+        self.reviewTexts = dict()
+
+    def to_dict(self):
+        return {
+            "userID": self.reviewerID,
+            "moviesWatched": self.movies_watched,
+            "reviewTexts": self.reviewTexts,
+        }
+    
+def user_from_dict(user_id, movie_set, review_text):
+    res = Reviewer()
+    res.reviewerID = user_id
+    res.movies_watched = movie_set
+    res.reviewTexts = review_text
+    return res
 
 trait_names = ["agreeableness", "openness", "conscientiousness", "extraversion", "neuroticism"]
 
 def parse_completion(completion):
-    res = ["","","","",""]
+    res = [0.0,0.0,0.0,0.0,0.0]
     for trait, score in zip(trait_names, completion):
         match trait.strip():
             case "openness":
@@ -30,7 +54,7 @@ def parse_completion(completion):
             case "extraversion":
                 res[1] = score
                 continue
-            case "agreeablesness":
+            case "agreeableness":
                 res[2] = score
                 continue
             case "conscientiousness":
@@ -59,15 +83,24 @@ def personality_average(p_list):
 
 def decompose_movie_map(movie_map, user_map, personality_map):
     res = list()
-    for movie_id in movie_map:
-        user_set = movie_map[movie_id]
-        for user_id in user_set:
-            user = user_map[user_id]
-            res.append([movie_id, user_id, user.movies_watched[movie_id]].append(personality_map[user_id]))
-
+#    for movie_id in movie_map:
+#        user_set = movie_map[movie_id]
+#        for user_id in user_set:
+#            user = user_map[user_id]
+#            final = [movie_id, user_id, user.movies_watched[movie_id][0], user.movies_watched[movie_id][1]]
+#            final.extend(personality_map[user_id])
+#            res.append(final)
+#
+#    return res
+    for user_id, user in user_map.items():
+        for movie_id, rating in user.movies_watched.items():
+            final = [movie_id, user_id, rating[0], rating[1]]
+            final.extend(personality_map[user_id])
+            res.append(final)
     return res
 
 def decompose_user_map(user_map): # TODO: add in personality matrix
+    eval_user_map = dict()
     res = list()
     for user in user_map.values():
         res.append([user.reviewerID, user.reviewTexts])
@@ -86,6 +119,7 @@ def k_core_filter_pass(user_map, movie_map, k):
                 user = user_map[user_id]
                 try:
                     del user.movies_watched[movie_id]
+                    del user.reviewTexts[movie_id]
                 except KeyError:
                     print("User does not have movie?\n\n")
                     print(str(len(user.movies_watched)))
@@ -109,125 +143,353 @@ def k_core_filter_pass(user_map, movie_map, k):
 
     return filtered
 
-#def perform_personality_inference(user_map, movie_map):
-#        personality_map = map()
-#        #OpenAI
-#        openai_key = "EMPTY"
-#        openai_base = "http://localhost:8000/v1"
-#        openai_client = OpenAI(
-#            api_key=openai_key,
-#            base_url=openai_base,
-#        )
-#
-#        print("Beginning personality inference...")
-#
-#        for user in user_map.values():
-#            temp_list = list()
-#            user_id = user.reviewerID
-#            for input in user.reviewTexts:
-#                res = openai_client.chat.completions.create(
-#                    model="unsloth/DeepSeek-R1-Distill-Llama-8B-unsloth-bnb-4bit",
-#                    messages=[
-#                    {"role": "user", "content": PROMPT + "\n" + input},
-#                    ]
-#                )
-#                print("\nOutput:\n\n" + res.choices[0].message.content)
-#                temp_list.append(parse_completion(res.choices[0].message.content))
-#            final_personality = average_personality(temp_list)
-#            personality_map[user_id] = final_personality
-#
-#        print("Writing excel to /tmp/dataset")
-#
-#        movie_frame = decompose_movie_map(movie_map, user_map, personality_map)
-#        #user_frame = decompose_user_map(user_map) #, personality_m) work personality matrix in eventually
-#
-#        #user_dataframe = pd.DataFrame(personality_map, columns=["user_id", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
-#        movie_dataframe = pd.DataFrame(movie_frame, columns=["movie_id", "user_id", "score", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
-#
-#        with pd.ExcelWriter("/tmp/dataset/out.xlsx") as excel_out:
-#            user_dataframe.to_excel(excel_out, sheet_name="User")
-#            movie_dataframe.to_excel(excel_out, sheet_name="Movie")
+
+
+
 
 
 def perform_prediction(user_map):
+
+    print("Performing Prediction")
+    le = preprocessing.LabelEncoder()
+    #users = list(user_map.values())
+    users = np.array_split(list(user_map.values()), 10)
+    total_count = len(users)
+    device = torch.device('cuda')
     warnings.filterwarnings('ignore')
+    
     model = AutoModelForSequenceClassification.from_pretrained("KevSun/Personality_LM", ignore_mismatched_sizes=True)
+    model.to(device)
     tokenizer = AutoTokenizer.from_pretrained("KevSun/Personality_LM")
+    
 
     personality_map = dict()
     
-    print("Performing Prediction")
+    chunk_nr = 0
+    
+    for chunks in users:
+        
+        chunk_nr += 1
+        total_count = len(chunks)
+        pbar = tqdm(total=total_count)
+        print(f"Chunk {chunk_nr}/10")
+        cur_count = 0
+        encoded_users = list()
+        encoded_input_ids = list()
+        encoded_attn = list()
+        for user in chunks:
+            user_texts = list(user.reviewTexts.values())
+            for
+            encoded = tokenizer(user_texts, return_tensors='pt', padding=True, truncation=True, max_length=64)
+            if encoded.input_ids.size(0) > 100:
+                chunked_input = torch.split(encoded.input_ids, 100, dim=0)
+                chunked_attn = torch.split(encoded.attention_mask, 100, dim=0)
+                encoded_users.append((user.reviewerID, True))
+                encoded_input_ids.append(chunked_input)
+                encoded_attn.append(chunked_attn)
+            else:
+                encoded_users.append((user.reviewerID, False))
+                encoded_input_ids.append(encoded.input_ids)
+                encoded_attn.append(encoded.attention_mask)
+            pbar.update(1)
+            #print(f"Encoding : {cur_count}/{total_count}")
+       
+        
+        #encoded_input_ids = [t.to(device) for t in encoded_input_ids]
+        #encoded_attn = [t.to(device) for t in encoded_attn]
+        pbar.close()
+        pbar = tqdm(total=total_count)
+        cur_count = 0
+        for user_info, input_ids, attn in zip(encoded_users, encoded_input_ids, encoded_attn):
 
-    for user in user_map:
-        personality_list = list()
-        for review_string in user.reviewTexts:
-            tokenized = tokenizer(review_string, return_tensors='pt', padding=True, truncation=True, max_length=128)
-            model.eval()
-            
-            with torch.no_grad():
-                outputs = model(**tokenized) #Query model
+            user_id, is_chunked = user_info
+            if is_chunked == True:
+                predictions_logits = None
+                for chunked_input, chunked_attn in zip (input_ids, attn):
+                    batch = {
+                    "input_ids":      chunked_input.to(device),
+                    "attention_mask": chunked_attn.to(device),
+                    }
+                    with torch.no_grad():
+                        outputs = model(**batch) #Query model
+                    if predictions_logits == None:
+                        predictions_logits = outputs.logits.to('cpu')
+                    else:
+                        predictions = outputs.logits.to('cpu')
+                        predictions_logits = torch.cat((predictions_logits, predictions), 0)
+                    
+                predictions = torch.nn.functional.softmax(predictions_logits, dim=-1)
+                #print(predictions)
+                predicted_scores = predictions.mean(dim=0).tolist()
+                personality = parse_completion(predicted_scores)
+                personality_map[user_id] = personality
+            else:
+                batch = {
+                    "input_ids":      input_ids.to(device),
+                    "attention_mask": attn.to(device),
+                }
+                with torch.no_grad():
+                    outputs = model(**batch) #Query model
 
-            predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
-            predicted_scores = predictions[0].tolist()
-            personality = parse_completion(predicted_scores)
-            personality_list.append(personality)
-        final_personality = personality_average(personality_list)
-        personality_map[user.reviewerID] = final_personality
-
+                predictions = torch.nn.functional.softmax(outputs.logits.to('cpu'), dim=-1)
+                predicted_scores = predictions.mean(dim=0).tolist()
+                personality = parse_completion(predicted_scores)
+                personality_map[user_id] = personality
+                #print(f"User : {cur_count}/{total_count}")
+            pbar.update(1)
+        pbar.close()
     return personality_map
+
+
+    #user_labels = torch.tensor(le.fit_transform(users))
+    #encoded_map = list()
+    #for ind in user_labels:
+    #    user = user_map[users[ind.item()]]
+    #    encodings = tokenizer(user.reviewTexts, return_tensors='pt', padding='max_length', truncation=True, max_length=128)
+    #    #print(encodings)
+    #    #raise Exception("HEHE CRASH")
+    #    encoded_map.append((ind, encodings))
+    #    cur_count += 1
+    #    user.reviewTexts.clear()
+    #    print(f"Encoding : {cur_count}/{total_count}")
+
+    #raise Exception("HEHE")
+
+    #dataset    = UserReviewDataset(encoded_map)
+    #batch_size = len(dataset)     # e.g. 12345 reviews total
+    #loader     = DataLoader(
+    #    dataset,
+    #    batch_size=total_count,   # ← one giant batch
+    #    shuffle=False,
+    #    collate_fn=collate_fn,
+    #    num_workers=8,
+    #    pin_memory=True,
+    #)
+
+    #with torch.device('cuda'):
+    #    for user, values in user_map.items():
+    #        encoded_strings = list()
+    #        for text in values.reviewTexts:
+    #total_count += 1
+    #encoded_map[user] = encoded_strings
+
+
+    #with torch.no_grad():
+    #    for batch in loader:                           # ← only one iteration
+    #        # 1) Pull out the list of user IDs for this batch
+    #        user_ids = batch.pop("user_ids")           # list[str] of length = len(dataset)
+
+    #        # 2) Move tensors to the GPU
+    #        batch = {k: v.to(device) for k, v in batch.items()}
+
+    #        # 3) Single forward pass over *all* data
+    #        outputs = model(**batch)
+
+    #        # 4) Compute probabilities and bring them back to CPU once
+    #        probs       = torch.nn.functional.softmax(outputs.logits, dim=-1)
+    #        probs_list  = probs.cpu().tolist()         # List[List[float]] of shape (N_examples, n_classes)
+
+    #        # 5) Re‐associate each example’s probabilities with its user_id
+    #        for uid, score_vec in zip(user_ids, probs_list):
+    #            personality_map[uid].append(parse_completion(score_vec))
+
+# 6)# Finally, average each user’s list of predictions:
+    #final_map = {
+    #    uid: personality_average(score_list)
+    #    for uid, score_list in personality_map.items()
+    #}
+    #print(len(final_map)timestamp)
+    #print("Finished Inference")
+
+    #cur_count = 0
+    #for user_id, encodings in encoded_map:
+    #    personality_list = list()
+    #    #user, encodings = user_encodings.item()
+    #    for encoded in encodings:
+    #        with torch.device('cuda'): 
+    #        #    encoded = tokenizer(text, return_tensors='pt', padding=True, truncation=True, max_length=128)
+    #            #encoded_strings.append(encoded)
+    #            model.eval() 
+    #            with torch.no_grad():
+    #                outputs = model(**encoded) #Query model
+
+    #            predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+    #            predicted_scores = predictions[0].tolist()
+    #            personality = parse_completion(predicted_scores)
+    #            personality_list.append(personality)
+    #    final_personality = personality_average(personality_list)
+    #    cur_count += 1
+    #    print(f"Infering : {cur_count}/{total_count}")
+    #    personality_map[users[user_id]] = final_personality
+
+    #return personality_map
+
+def parse_jsonl(lines):
+    user_map = dict()
+    movie_map = dict()
+    count = 0
+    print(lines[0])
+    for line in lines:
+        json_item = json.loads(line.strip())
+        if "text" not in json_item:
+            continue
+        user_id = json_item["user_id"]
+        movie_id = json_item["asin"]
+        user = None
+        if user_id in user_map:
+            user = user_map[user_id]
+        else:
+            user = Reviewer()
+            user.reviewerID = user_id
+        user.movies_watched[movie_id] = (json_item["rating"], json_item["timestamp"])
+        user.reviewTexts[movie_id] = json_item["text"]
+        
+        user_set = None
+        if movie_id in movie_map:
+            user_set = movie_map[movie_id]
+        else:
+            user_set = set()
+
+        user_set.add(user_id)
+        movie_map[movie_id] = user_set
+        user_map[user_id] = user
+
+        count += 1
+        print(f"{count}/{len(lines)}")
+
+
+    return (user_map, movie_map)
+
+def cache_20_core(user_map, movie_map):
+    with open("/tmp/dataset/20_core_user.jsonl", "w") as file:
+        for user_id, user in user_map.items():
+            json.dump(user.to_dict(), file)
+            file.write('\n')
+
+    with open("/tmp/dataset/20_core_movie.jsonl", "w") as file:
+        for movie_id, user_set in movie_map.items():
+            json.dump({
+                "movieID": movie_id,
+                "users": list(map(lambda x: x, user_set)),
+                }, file)
+            file.write('\n')
+
+def load_20_core():
+    user_map = dict()
+    with open("/tmp/dataset/20_core_user.jsonl", "r") as file:
+        for line in file:
+            item = json.loads(line.strip())
+            user_id = item["userID"]
+            user_map[user_id] = user_from_dict(user_id, item["moviesWatched"], item["reviewTexts"])
+    movie_map = dict()
+    with open("/tmp/dataset/20_core_movie.jsonl", "r") as file:
+        for line in file:
+            item = json.loads(line.strip())
+            movie_map[item["movieID"]] = set(item["users"])
+    return (user_map, movie_map)
+
+def split_dataset(user_map, eval_percentage):
+    perc_decimal = eval_percentage / 100
+
+    random.seed(SPLIT_RANDOM_SEED)
+
+    eval_map = dict()
+
+    for user in user_map.values():
+        #print(user.reviewTexts.keys())
+        eval_user = Reviewer()
+        user_id = user.reviewerID
+        eval_user.reviewerID = user_id
+        movie_count = len(user.movies_watched)
+        eval_movie_count = int(movie_count * perc_decimal)
+        selected_items = random.sample(list(user.movies_watched.items()), k=eval_movie_count)
+        for movie_id, rating in selected_items:
+            #print(movie_id)
+            eval_user.movies_watched[movie_id] = rating
+            eval_user.reviewTexts[movie_id] = user.reviewTexts[movie_id]
+            del user.movies_watched[movie_id]
+            del user.reviewTexts[movie_id]
+
+        eval_map[user_id] = eval_user
+
+    return (user_map, eval_map)
+
 
 
 
 def main():
+    cached_core = False
     user_map = dict()
     movie_map = dict()
-    with open("./Movies_and_TV.jsonl", "r") as file:
-        for line in file:
-            json_item = json.loads(line.strip())
-            if "text" not in json_item:
-                continue
-            user_id = json_item["user_id"]
-            movie_id = json_item["asin"]
-            user = None
-            if user_id in user_map:
-                user = user_map[user_id]
-            else:
-                user = Reviewer()
-                user.reviewerID = user_id
-            user.movies_watched[movie_id] = json_item["rating"]
-            user.reviewTexts.append(json_item["text"])
-            
-            user_set = None
-            if movie_id in movie_map:
-                user_set = movie_map[movie_id]
-            else:
-                user_set = set()
+    if os.path.exists("/tmp/dataset/20_core_user.jsonl") and os.path.exists("/tmp/dataset/20_core_movie.jsonl"):
+        print("loading cached 20-core")
+        cached_core = True
+        user_map, movie_map = load_20_core()
+    else:
+        print("loading dataset")
+        with open("./Movies_and_TV.jsonl", "r") as file:
+            for line in file:
+                json_item = json.loads(line.strip())
+                if "text" not in json_item:
+                    continue
+                user_id = json_item["user_id"]
+                movie_id = json_item["asin"]
+                user = None
+                if user_id in user_map:
+                    user = user_map[user_id]
+                else:
+                    user = Reviewer()
+                    user.reviewerID = user_id
+                user.movies_watched[movie_id] = (json_item["rating"], json_item["timestamp"])
+                user.reviewTexts[movie_id] = json_item["text"]
+                
+                user_set = None
+                if movie_id in movie_map:
+                    user_set = movie_map[movie_id]
+                else:
+                    user_set = set()
 
-            user_set.add(user_id)
-            movie_map[movie_id] = user_set
-            user_map[user_id] = user
+                user_set.add(user_id)
+                movie_map[movie_id] = user_set
+                user_map[user_id] = user
 
-        print("Finished parsing reviews, user count = " + str(len(user_map)) + "\nmovie count:" + str(len(movie_map)))
-        
-        #20-core filtering
+    print("Finished parsing reviews, user count = " + str(len(user_map)) + "\nmovie count:" + str(len(movie_map)))
+    
+    #20-core filtering
+
+
+
+
+    if cached_core == False:
+        print("20 Core Filtering...")
         while k_core_filter_pass(user_map, movie_map, 20) != False:
             continue
-
         print("\n\nProcessed 20-core filter passes, user count = " + str(len(user_map)) + "\nmovie count:" + str(len(movie_map)))
+        print("caching...")
+        cache_20_core(user_map, movie_map)
 
-        personality_map = perform_prediction(user_map)
+    print("splitting dataset")
+    user_map, eval_map = split_dataset(user_map, 30)
 
-        print("Writing excel to /tmp/dataset")
+    personality_map = perform_prediction(user_map)
 
-        movie_frame = decompose_movie_map(movie_map, user_map, personality_map)
-        #user_frame = decompose_user_map(user_map) #, personality_m) work personality matrix in eventually
+    print("Writing excel to /tmp/dataset")
 
-        #user_dataframe = pd.DataFrame(personality_map, columns=["user_id", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
-        movie_dataframe = pd.DataFrame(movie_frame, columns=["movie_id", "user_id", "score", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
+    training_frame = decompose_movie_map(movie_map, user_map, personality_map)
+    eval_frame = decompose_movie_map(movie_map, eval_map, personality_map)
 
-        with pd.ExcelWriter("/tmp/dataset/out.xlsx") as excel_out:
-            #user_dataframe.to_excel(excel_out, sheet_name="User")
-            movie_dataframe.to_excel(excel_out, sheet_name="Movie")
+    #user_frame = decompose_user_map(user_map) #, personality_m) work personality matrix in eventually
+
+    #user_dataframe = pd.DataFrame(personality_map, columns=["user_id", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
+    training_dataframe = pd.DataFrame(training_frame, columns=["movie_id", "user_id", "score", "timestamp", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
+    eval_dataframe = pd.DataFrame(eval_frame, columns=["movie_id", "user_id", "score", "timestamp", "openness", "extraversion", "agreeableness", "conscientiousness", "neuroticism"])
+
+
+    with pd.ExcelWriter("/tmp/dataset/out.xlsx") as excel_out:
+        #user_dataframe.to_excel(excel_out, sheet_name="User")
+        training_dataframe.to_excel(excel_out, sheet_name="training")
+        eval_dataframe.to_excel(excel_out, sheet_name="eval")
+
 
         
 
