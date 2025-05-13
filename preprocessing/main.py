@@ -143,9 +143,68 @@ def k_core_filter_pass(user_map, movie_map, k):
 
     return filtered
 
+#def get_duplicates(snippet, text):
+#    res = list()
+#    if snippet == None:
+#        return None
+#    for n in range(0, len(text)):
+#        if token_list[n] == snippet:
+#            res.append(n)
+#    return res
 
 
+def split_review_text(text, tokenizer):
+    res = list()
+    current_text = text
+    pre_tokens = tokenizer.tokenize(text)
+    tokens = list()
+    for token in pre_tokens:
+        if token == "Ġ":
+            res.append(' ')
+        new = token.replace('Ġ', '')
+        tokens.append(new)
 
+    if len(tokens) <= 64:
+        return None
+
+    while len(tokens) > 64:
+        #index = -1
+        slice = tokens[0:64]
+        last_token = slice[-1]
+
+        #duplicates = get_duplicates(last_token, 64, slice)
+        #if len(duplicates) == 0:
+        #    print(last_token)
+        #    print(slice)
+        #    raise Exception("Get duplicates Failed")
+        #if len(duplicates) > 1:
+        #    search_string = current_text
+        #    for duplicate in duplicates:
+        #        index = search_string.find(last_token)
+        #        if index == -1:
+        #            print(last_token)
+        #            print(slice)
+        #            raise Exception("Find duplicates Failed")
+        #        cutoff = index + len(last_token) + 1
+        #        search_string = search_string[cutoff:]
+        #else:
+        #    index = text.find(last_token)
+        #index = 
+
+        if index == -1:
+            print(last_token)
+            print(slice)
+            raise Exception("Find index Failed")
+        cutoff = index + len(last_token) + 1
+        split_text = current_text[:cutoff]
+        res.append(split_text)
+        current_text = current_text[cutoff:]
+        tokens = tokens[64:]
+    if len(current_text) != 0:
+        res.append(current_text)
+    return res
+
+        
 
 
 def perform_prediction(user_map):
@@ -178,9 +237,25 @@ def perform_prediction(user_map):
         encoded_input_ids = list()
         encoded_attn = list()
         for user in chunks:
-            user_texts = list(user.reviewTexts.values())
-            for
-            encoded = tokenizer(user_texts, return_tensors='pt', padding=True, truncation=True, max_length=64)
+            encoded = None
+            for text in list(user.reviewTexts.values()):
+                #text_split = split_review_text(text, tokenizer)
+                #if text_split == None:
+                #tokenized = tokenizer.tokenize(text)
+            #    if len(tokenized) <= 64
+            #        user_texts.append(text)
+            #    else:
+            #        split_tokenized = np.array_split(tokenized, 64)
+            #        user_texts.extend(split_tokenized)
+                tokenized = tokenizer(text, return_tensors='pt', padding='max_length', truncation=True, max_length=64, stride=2, return_overflowing_tokens=True)
+                #if len(tokenizer.tokenize(text)) <= 64:
+                #    print(encoded)
+                del tokenized['overflow_to_sample_mapping']
+                if encoded == None:
+                    encoded = tokenized
+                else:
+                    encoded.input_ids = torch.cat((encoded.input_ids, tokenized.input_ids), 0)
+                    encoded.attention_mask = torch.cat((encoded.attention_mask, tokenized.attention_mask), 0)
             if encoded.input_ids.size(0) > 100:
                 chunked_input = torch.split(encoded.input_ids, 100, dim=0)
                 chunked_attn = torch.split(encoded.attention_mask, 100, dim=0)
@@ -217,10 +292,11 @@ def perform_prediction(user_map):
                     else:
                         predictions = outputs.logits.to('cpu')
                         predictions_logits = torch.cat((predictions_logits, predictions), 0)
-                    
-                predictions = torch.nn.functional.softmax(predictions_logits, dim=-1)
-                #print(predictions)
-                predicted_scores = predictions.mean(dim=0).tolist()
+
+                predictions = predictions_logits.mean(dim=0) 
+                predicted_scores = torch.nn.functional.softmax(predictions_logits, dim=-1).tolist()
+                print(predicted_scores)
+                #predicted_scores = predictions.mean(dim=0).tolist()
                 personality = parse_completion(predicted_scores)
                 personality_map[user_id] = personality
             else:
@@ -230,9 +306,11 @@ def perform_prediction(user_map):
                 }
                 with torch.no_grad():
                     outputs = model(**batch) #Query model
-
-                predictions = torch.nn.functional.softmax(outputs.logits.to('cpu'), dim=-1)
-                predicted_scores = predictions.mean(dim=0).tolist()
+                
+                predictions = outputs.logits.to('cpu').mean(dim=0)
+                predicted_scores = torch.nn.functional.softmax(predictions, dim=-1)
+                #predicted_scores = predictions.mean(dim=0).tolist()
+                print(predicted_scores)
                 personality = parse_completion(predicted_scores)
                 personality_map[user_id] = personality
                 #print(f"User : {cur_count}/{total_count}")
