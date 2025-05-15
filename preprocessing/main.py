@@ -217,9 +217,9 @@ def perform_prediction(user_map):
     device = torch.device('cuda')
     warnings.filterwarnings('ignore')
     
-    model = AutoModelForSequenceClassification.from_pretrained("KevSun/Personality_LM", ignore_mismatched_sizes=True)
+    model = AutoModelForSequenceClassification.from_pretrained("../../detecting_personality-main/utils/results/OPTUNAOPTI/personality_model")
     model.to(device)
-    tokenizer = AutoTokenizer.from_pretrained("KevSun/Personality_LM")
+    tokenizer = AutoTokenizer.from_pretrained("../../detecting_personality-main/utils/results/OPTUNAOPTI/personality_model")
     
 
     personality_map = dict()
@@ -235,10 +235,10 @@ def perform_prediction(user_map):
         cur_count = 0
         encoded_users = list()
         encoded_input_ids = list()
-        encoded_attn = list()
+        encoded_attn = []
         for user in chunks:
-            encoded = None
-            for text in list(user.reviewTexts.values()):
+            #encoded = None
+            #for text in list(user.reviewTexts.values()):
                 #text_split = split_review_text(text, tokenizer)
                 #if text_split == None:
                 #tokenized = tokenizer.tokenize(text)
@@ -247,15 +247,15 @@ def perform_prediction(user_map):
             #    else:
             #        split_tokenized = np.array_split(tokenized, 64)
             #        user_texts.extend(split_tokenized)
-                tokenized = tokenizer(text, return_tensors='pt', padding='max_length', truncation=True, max_length=64, stride=2, return_overflowing_tokens=True)
+            encoded = tokenizer(list(user.reviewTexts.values()), return_tensors='pt', padding='max_length', truncation=True, max_length=446)
                 #if len(tokenizer.tokenize(text)) <= 64:
                 #    print(encoded)
-                del tokenized['overflow_to_sample_mapping']
-                if encoded == None:
-                    encoded = tokenized
-                else:
-                    encoded.input_ids = torch.cat((encoded.input_ids, tokenized.input_ids), 0)
-                    encoded.attention_mask = torch.cat((encoded.attention_mask, tokenized.attention_mask), 0)
+                #del tokenized['overflow_to_sample_mapping']
+                #if encoded == None:
+                #    encoded = tokenized
+                #else:
+                #    encoded.input_ids = torch.cat((encoded.input_ids, tokenized.input_ids), 0)
+                #    encoded.attention_mask = torch.cat((encoded.attention_mask, tokenized.attention_mask), 0)
             if encoded.input_ids.size(0) > 100:
                 chunked_input = torch.split(encoded.input_ids, 100, dim=0)
                 chunked_attn = torch.split(encoded.attention_mask, 100, dim=0)
@@ -294,10 +294,10 @@ def perform_prediction(user_map):
                         predictions_logits = torch.cat((predictions_logits, predictions), 0)
 
                 predictions = predictions_logits.mean(dim=0) 
-                predicted_scores = torch.nn.functional.softmax(predictions_logits, dim=-1).tolist()
-                print(predicted_scores)
+                #predicted_scores = torch.nn.functional.softmax(predictions_logits, dim=-1).tolist()
+                print(predictions)
                 #predicted_scores = predictions.mean(dim=0).tolist()
-                personality = parse_completion(predicted_scores)
+                personality = parse_completion(predictions)
                 personality_map[user_id] = personality
             else:
                 batch = {
@@ -308,10 +308,10 @@ def perform_prediction(user_map):
                     outputs = model(**batch) #Query model
                 
                 predictions = outputs.logits.to('cpu').mean(dim=0)
-                predicted_scores = torch.nn.functional.softmax(predictions, dim=-1)
+                #predicted_scores = torch.nn.functional.softmax(predictions, dim=-1)
                 #predicted_scores = predictions.mean(dim=0).tolist()
-                print(predicted_scores)
-                personality = parse_completion(predicted_scores)
+                print(predictions)
+                personality = parse_completion(predictions)
                 personality_map[user_id] = personality
                 #print(f"User : {cur_count}/{total_count}")
             pbar.update(1)
@@ -403,7 +403,7 @@ def perform_prediction(user_map):
     #return personality_map
 
 def parse_jsonl(lines):
-    user_map = dict()
+    user_map = {}
     movie_map = dict()
     count = 0
     print(lines[0])

@@ -23,13 +23,11 @@ print("Pandas version: {}".format(pd.__version__))
 print("Tensorflow version: {}".format(tf.__version__))
 
 
-if not os.path.exists("/tmp/dataset/parsed_reviews.xlsx"):
+if not os.path.exists("/tmp/dataset/out.xlsx"):
     raise Exception("Dataset is not present! place in the following path: /tmp/dataset/parsed_reviews.xlsx")
 
-dataset = pd.read_excel("/tmp/dataset/parsed_reviews.xlsx")
-
-
-
+train = pd.read_excel("/tmp/dataset/out.xlsx", 'training')
+eval = pd.read_excel("/tmp/dataset/out.xlsx", 'eval')
 
 # top k items to recommend
 TOP_K = 10
@@ -39,4 +37,20 @@ EPOCHS = 100
 BATCH_SIZE = 256
 
 SEED = DEFAULT_SEED  # Set None for non-deterministic results
+
+
+
+leave_one_out_test = eval.groupby("user_id").last().reset_index()
+
+
+
+train_file = "./train.csv"
+test_file = "./test.csv"
+leave_one_out_test_file = "./leave_one_out_test.csv"
+train.to_csv(train_file, index=False)
+eval.to_csv(test_file, index=False)
+leave_one_out_test.to_csv(leave_one_out_test_file, index=False)
+
+
+data = NCFDataset(train_file=train_file, test_file=leave_one_out_test_file, seed=SEED, overwrite_test_file_full=True)
 
